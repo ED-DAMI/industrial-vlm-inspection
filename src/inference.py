@@ -1,162 +1,154 @@
-"""Inference helpers for industrial inspection."""
-
 from __future__ import annotations
 
+import logging
 import re
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Union
+from typing import Any
 
-try:
-    from PIL import Image
-except Exception:  
-    Image = None 
+import torch
+from PIL import Image
+from qwen_vl_utils import process_vision_info
 
-from .model import IndustrialVLMConfig, load_model_and_processor
+from .dataset import SYSTEM_PROMPT, build_conversation
+from .model import InspectionModel, ModelConfig
 
+logger = logging.getLogger(__name__)
 
-DEFAULT_INSPECTION_PROMPT = (
-    "Inspect this industrial part. Identify visible defects, explain the most likely cause, "
-    "and return a concise report with sections labeled Diagnosis, Cause, and Recommended action."
+GROUNDING_PROMPT = (
+    "Analyse cette pièce et localise chaque défaut avec des bounding boxes. "
+    "Réponds au format JSON strict :\n"
+    '{"verdict": "CONFORME|NON CONFORME", "defects": ['
+    '{"type": "...", "severity": "faible|moyenne|élevée", '
+    '"cause": "...", "bbox": [x1, y1, x2, y2]}]}'
 )
 
 
 @dataclass
 class InspectionResult:
-    diagnosis: str
-    cause: str
-    recommendation: str
-    raw_text: str
-    metadata: Dict[str, Any] = field(default_factory=dict)
+    verdict: str
+    analysis: str
+    defects: list[dict[str, Any]]
+    inference_time_ms: float
+    raw_output: str
+
+    @property
+    def is_compliant(self) -> bool:
+        return "conforme" in self.verdict.lower() and "non" not in self.verdict.lower()
 
 
-class IndustrialVLMInspector:
-    """High-level inference wrapper around the vision-language model."""
-
+class InspectionPipeline:
     def __init__(
         self,
-        config: Optional[IndustrialVLMConfig] = None,
-        model: Any = None,
-        processor: Any = None,
+        model_path: str | Path | None = None,
+        config: ModelConfig | None = None,
+        max_new_tokens: int = 512,
     ) -> None:
-        self.config = config or IndustrialVLMConfig()
-        if model is None or processor is None:
-            model, processor = load_model_and_processor(self.config)
-        self.model = model
-        self.processor = processor
+        self._inspection_model = InspectionModel(config).load()
+        if model_path:
+            self._inspection_model.apply_lora(checkpoint=model_path)
+        self.model = self._inspection_model.model
+        self.processor = self._inspection_model.processor
+        self.max_new_tokens = max_new_tokens
+        self.model.eval()
 
-    @classmethod
-    def from_pretrained(cls, config: Optional[IndustrialVLMConfig] = None) -> "IndustrialVLMInspector":
-        return cls(config=config)
+    @torch.inference_mode()
+    def _generate(self, image: Image.Image, prompt: str) -> tuple[str, float]:
+        messages = build_conversation(image, prompt)
+        text = self.processor.apply_chat_template(
+            messages, tokenize=False, add_generation_prompt=True
+        )
+        image_inputs, _ = process_vision_info(messages)
+        inputs = self.processor(
+            text=[text],
+            images=image_inputs,
+            return_tensors="pt",
+        ).to(self.model.device)
 
-    def _ensure_image(self, image: Union[str, Path, Any]) -> Any:
-        if Image is None:
-            raise RuntimeError("Pillow is required to load images for inference.")
+        t0 = time.perf_counter()
+        generated_ids = self.model.generate(
+            **inputs,
+            max_new_tokens=self.max_new_tokens,
+            do_sample=False,
+            temperature=None,
+            top_p=None,
+        )
+        elapsed_ms = (time.perf_counter() - t0) * 1000
 
-        if isinstance(image, (str, Path)):
-            return Image.open(image).convert("RGB")
-        return image
-
-    def _build_messages(self, image: Any, prompt: str) -> List[Dict[str, Any]]:
-        return [
-            {
-                "role": "user",
-                "content": [
-                    {"type": "image", "image": image},
-                    {"type": "text", "text": prompt},
-                ],
-            }
+        generated_ids_trimmed = [
+            out_ids[len(in_ids):]
+            for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
         ]
+        output_text = self.processor.batch_decode(
+            generated_ids_trimmed,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )[0]
+        return output_text, elapsed_ms
 
-    def _format_prompt(self, image: Any, prompt: str) -> str:
-        if hasattr(self.processor, "apply_chat_template"):
-            return self.processor.apply_chat_template(
-                self._build_messages(image, prompt),
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-        return prompt
+    def analyze(self, image: Image.Image, question: str | None = None) -> InspectionResult:
+        prompt = question or (
+            "Analyse cette pièce métallique. Identifie les défauts, leur type, "
+            "localisation et causes probables. Donne un verdict CONFORME ou NON CONFORME."
+        )
+        raw_output, elapsed_ms = self._generate(image, prompt)
 
-    def _move_inputs_to_model_device(self, model_inputs: Any) -> Any:
-        if hasattr(model_inputs, "to"):
-            try:
-                return model_inputs.to(self.model.device)
-            except Exception:
-                return model_inputs
-        if isinstance(model_inputs, dict):
-            moved_inputs = {}
-            for key, value in model_inputs.items():
-                moved_inputs[key] = value.to(self.model.device) if hasattr(value, "to") else value
-            return moved_inputs
-        return model_inputs
-
-    def _decode_output(self, generated_ids: Any) -> str:
-        if hasattr(self.processor, "batch_decode"):
-            decoded = self.processor.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )
-            return decoded[0] if decoded else ""
-        if hasattr(self.processor, "tokenizer") and hasattr(self.processor.tokenizer, "batch_decode"):
-            decoded = self.processor.tokenizer.batch_decode(
-                generated_ids,
-                skip_special_tokens=True,
-                clean_up_tokenization_spaces=False,
-            )
-            return decoded[0] if decoded else ""
-        return str(generated_ids)
-
-    def _extract_field(self, text: str, label: str) -> str:
-        pattern = rf"{re.escape(label)}\s*:\s*(.*?)(?:\n[A-Z][A-Za-z ]+\s*:|\Z)"
-        match = re.search(pattern, text, flags=re.DOTALL)
-        if match:
-            return match.group(1).strip()
-        return ""
-
-    def analyze_image(self, image: Union[str, Path, Any], prompt: Optional[str] = None) -> InspectionResult:
-        pil_image = self._ensure_image(image)
-        user_prompt = prompt or DEFAULT_INSPECTION_PROMPT
-        formatted_prompt = self._format_prompt(pil_image, user_prompt)
-
-        if hasattr(self.processor, "__call__"):
-            try:
-                model_inputs = self.processor(
-                    text=[formatted_prompt],
-                    images=[pil_image],
-                    return_tensors="pt",
-                    padding=True,
-                )
-            except TypeError:
-                model_inputs = self.processor(
-                    formatted_prompt,
-                    images=pil_image,
-                    return_tensors="pt",
-                )
-        else:
-            raise RuntimeError("The processor object does not support inference inputs.")
-
-        model_inputs = self._move_inputs_to_model_device(model_inputs)
-
-        generation_kwargs = {
-            "max_new_tokens": self.config.max_new_tokens,
-            "temperature": self.config.temperature,
-            "top_p": self.config.top_p,
-        }
-
-        import torch
-
-        with torch.inference_mode():
-            generated_ids = self.model.generate(**model_inputs, **generation_kwargs)
-
-        raw_text = self._decode_output(generated_ids)
+        verdict = _extract_verdict(raw_output)
         return InspectionResult(
-            diagnosis=self._extract_field(raw_text, "Diagnosis") or raw_text,
-            cause=self._extract_field(raw_text, "Cause"),
-            recommendation=self._extract_field(raw_text, "Recommended action"),
-            raw_text=raw_text,
-            metadata={"prompt": user_prompt},
+            verdict=verdict,
+            analysis=raw_output,
+            defects=[],
+            inference_time_ms=elapsed_ms,
+            raw_output=raw_output,
         )
 
-    def analyze_directory(self, image_paths: Sequence[Union[str, Path]], prompt: Optional[str] = None) -> List[InspectionResult]:
-        return [self.analyze_image(image_path, prompt=prompt) for image_path in image_paths]
+    def analyze_with_grounding(self, image: Image.Image) -> InspectionResult:
+        import json
+
+        raw_output, elapsed_ms = self._generate(image, GROUNDING_PROMPT)
+
+        try:
+            json_match = re.search(r"\{.*\}", raw_output, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                verdict = data.get("verdict", _extract_verdict(raw_output))
+                defects = data.get("defects", [])
+            else:
+                verdict = _extract_verdict(raw_output)
+                defects = []
+        except json.JSONDecodeError:
+            logger.warning("Impossible de parser le JSON du grounding.")
+            verdict = _extract_verdict(raw_output)
+            defects = []
+
+        return InspectionResult(
+            verdict=verdict,
+            analysis=raw_output,
+            defects=defects,
+            inference_time_ms=elapsed_ms,
+            raw_output=raw_output,
+        )
+
+    def chat(
+        self,
+        image: Image.Image,
+        question: str,
+        history: list[tuple[str, str]] | None = None,
+    ) -> str:
+        context = ""
+        if history:
+            for q, a in history[-3:]:
+                context += f"Opérateur: {q}\nAssistant: {a}\n\n"
+        full_prompt = f"{context}Opérateur: {question}" if context else question
+        output, _ = self._generate(image, full_prompt)
+        return output
+
+
+def _extract_verdict(text: str) -> str:
+    upper = text.upper()
+    if "NON CONFORME" in upper:
+        return "NON CONFORME"
+    if "CONFORME" in upper:
+        return "CONFORME"
+    return "INDÉTERMINÉ"
