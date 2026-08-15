@@ -1,94 +1,104 @@
-"""Model loading utilities for the industrial vision-language pipeline."""
-
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple
+import logging
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Literal
+
+import torch
+from peft import LoraConfig, get_peft_model, PeftModel
+from transformers import (
+    AutoProcessor,
+    BitsAndBytesConfig,
+    Qwen2_5_VLForConditionalGeneration,
+)
+
+logger = logging.getLogger(__name__)
+
+MODEL_ID = "Qwen/Qwen2.5-VL-7B-Instruct"
 
 
 @dataclass
-class IndustrialVLMConfig:
-	"""Configuration used to initialize the vision-language model."""
-
-	model_name: str = "Qwen/Qwen2.5-VL-7B-Instruct"
-	trust_remote_code: bool = True
-	device_map: Any = "auto"
-	torch_dtype: str = "auto"
-	load_in_4bit: bool = False
-	load_in_8bit: bool = False
-	max_new_tokens: int = 256
-	temperature: float = 0.2
-	top_p: float = 0.9
-	system_prompt: str = (
-		"You are an industrial inspection assistant. Detect defects, explain likely causes, "
-		"and answer in concise professional French unless the user asks otherwise."
-	)
-
-
-def _build_quantization_kwargs(config: IndustrialVLMConfig) -> Dict[str, Any]:
-	if not config.load_in_4bit and not config.load_in_8bit:
-		return {}
-
-	try:
-		from transformers import BitsAndBytesConfig
-	except Exception as exc:  # pragma: no cover - optional dependency
-		raise RuntimeError(
-			"Quantization was requested, but the required transformers/bitsandbytes "
-			"dependencies are not available."
-		) from exc
-
-	quantization_config = BitsAndBytesConfig(
-		load_in_4bit=config.load_in_4bit,
-		load_in_8bit=config.load_in_8bit,
-	)
-	return {"quantization_config": quantization_config}
+class ModelConfig:
+    model_id: str = MODEL_ID
+    mode: Literal["standard", "quantized_4bit", "quantized_8bit"] = "quantized_4bit"
+    device: str = "auto"
+    max_pixels: int = 1_280 * 28 * 28
+    min_pixels: int = 256 * 28 * 28
+    lora_rank: int = 16
+    lora_alpha: int = 32
+    lora_dropout: float = 0.05
+    lora_target_modules: list[str] = field(
+        default_factory=lambda: [
+            "q_proj", "k_proj", "v_proj", "o_proj",
+            "gate_proj", "up_proj", "down_proj",
+        ]
+    )
 
 
-def load_model_and_processor(config: IndustrialVLMConfig) -> Tuple[Any, Any]:
-	"""Load the model and processor with lazy imports.
+def _build_bnb_config(mode: str) -> BitsAndBytesConfig | None:
+    if mode == "quantized_4bit":
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_use_double_quant=True,
+            bnb_4bit_compute_dtype=torch.bfloat16,
+        )
+    if mode == "quantized_8bit":
+        return BitsAndBytesConfig(load_in_8bit=True)
+    return None
 
-	The function is intentionally defensive so the package can still be imported on a
-	machine where the heavyweight ML stack is not yet installed.
-	"""
 
-	try:
-		import transformers
-	except Exception as exc: 
-		raise RuntimeError(
-			"Transformers is required to load the industrial VLM model. Install the "
-			"dependencies listed in requirements.txt first."
-		) from exc
+class InspectionModel:
+    def __init__(self, config: ModelConfig | None = None) -> None:
+        self.config = config or ModelConfig()
+        self.processor: AutoProcessor | None = None
+        self.model: Qwen2_5_VLForConditionalGeneration | None = None
 
-	try:
-		processor = transformers.AutoProcessor.from_pretrained(
-			config.model_name,
-			trust_remote_code=config.trust_remote_code,
-		)
-	except Exception as exc:  
-		raise RuntimeError(f"Unable to load processor for {config.model_name!r}.") from exc
+    def load(self) -> "InspectionModel":
+        cfg = self.config
+        logger.info("Chargement du processeur depuis %s", cfg.model_id)
+        self.processor = AutoProcessor.from_pretrained(
+            cfg.model_id,
+            min_pixels=cfg.min_pixels,
+            max_pixels=cfg.max_pixels,
+        )
 
-	model_loaders = []
-	if hasattr(transformers, "AutoModelForCausalLM"):
-		model_loaders.append(transformers.AutoModelForCausalLM)
-	if hasattr(transformers, "AutoModelForVision2Seq"):
-		model_loaders.append(transformers.AutoModelForVision2Seq)
+        bnb_config = _build_bnb_config(cfg.mode)
+        torch_dtype = torch.bfloat16 if cfg.mode == "standard" else None
 
-	last_error: Optional[Exception] = None
-	for model_loader in model_loaders:
-		try:
-			model = model_loader.from_pretrained(
-				config.model_name,
-				trust_remote_code=config.trust_remote_code,
-				device_map=config.device_map,
-				torch_dtype=config.torch_dtype,
-				**_build_quantization_kwargs(config),
-			)
-			if hasattr(model, "eval"):
-				model.eval()
-			return model, processor
-		except Exception as exc:  # pragma: no cover - runtime dependency
-			last_error = exc
+        logger.info("Chargement du modèle (mode=%s)", cfg.mode)
+        self.model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+            cfg.model_id,
+            torch_dtype=torch_dtype,
+            device_map=cfg.device,
+            quantization_config=bnb_config,
+        )
+        logger.info("Modèle chargé avec succès.")
+        return self
 
-	raise RuntimeError(
-		f"Unable to load model {config.model_name!r}. Tried supported auto model classes."
-	) from last_error
+    def apply_lora(self, checkpoint: str | Path | None = None) -> "InspectionModel":
+        assert self.model is not None, "Appeler .load() avant .apply_lora()"
+        if checkpoint:
+            logger.info("Chargement des poids LoRA depuis %s", checkpoint)
+            self.model = PeftModel.from_pretrained(self.model, str(checkpoint))
+        else:
+            logger.info("Initialisation d'un nouvel adaptateur LoRA")
+            lora_cfg = LoraConfig(
+                r=self.config.lora_rank,
+                lora_alpha=self.config.lora_alpha,
+                lora_dropout=self.config.lora_dropout,
+                target_modules=self.config.lora_target_modules,
+                bias="none",
+                task_type="CAUSAL_LM",
+            )
+            self.model = get_peft_model(self.model, lora_cfg)
+            self.model.print_trainable_parameters()
+        return self
+
+    def save(self, output_dir: str | Path) -> None:
+        output_dir = Path(output_dir)
+        output_dir.mkdir(parents=True, exist_ok=True)
+        self.model.save_pretrained(str(output_dir))
+        self.processor.save_pretrained(str(output_dir))
+        logger.info("Modèle sauvegardé dans %s", output_dir)
