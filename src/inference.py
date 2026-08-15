@@ -9,8 +9,8 @@ from typing import Any, Dict, List, Optional, Sequence, Union
 
 try:
     from PIL import Image
-except Exception:  # pragma: no cover - optional dependency
-    Image = None  # type: ignore[assignment]
+except Exception:  
+    Image = None 
 
 from .model import IndustrialVLMConfig, load_model_and_processor
 

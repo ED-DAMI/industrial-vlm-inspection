@@ -53,7 +53,7 @@ def load_model_and_processor(config: IndustrialVLMConfig) -> Tuple[Any, Any]:
 
 	try:
 		import transformers
-	except Exception as exc:  # pragma: no cover - optional dependency
+	except Exception as exc: 
 		raise RuntimeError(
 			"Transformers is required to load the industrial VLM model. Install the "
 			"dependencies listed in requirements.txt first."
@@ -64,7 +64,7 @@ def load_model_and_processor(config: IndustrialVLMConfig) -> Tuple[Any, Any]:
 			config.model_name,
 			trust_remote_code=config.trust_remote_code,
 		)
-	except Exception as exc:  # pragma: no cover - runtime dependency
+	except Exception as exc:  
 		raise RuntimeError(f"Unable to load processor for {config.model_name!r}.") from exc
 
 	model_loaders = []
