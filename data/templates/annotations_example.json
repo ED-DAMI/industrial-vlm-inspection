@@ -1,0 +1,20 @@
+[
+  {
+    "image_path": "data/processed/metal_nut/scratch_001.png",
+    "label": "scratch",
+    "user_prompt": "Analyse cette pièce métallique. Y a-t-il des défauts visibles ? Donne un verdict CONFORME ou NON CONFORME.",
+    "response": "**Analyse de la pièce :**\n\n- **Défaut détecté :** Rayure profonde (scratch)\n- **Localisation :** Surface supérieure, zone centrale, orientation diagonale (45°)\n- **Dimensions estimées :** 15–20 mm de longueur, 0.5 mm de largeur\n- **Sévérité :** Élevée\n- **Cause probable :** Contact avec un outil abrasif lors du transport ou d'une mauvaise manipulation en ligne de production. Peut également indiquer un réglage incorrect des guides de convoyeur.\n- **Risque :** Risque de propagation en fissure sous contrainte mécanique.\n\n**Verdict : NON CONFORME** ❌\n\n**Action recommandée :** Mise en quarantaine et inspection de l'ensemble du lot."
+  },
+  {
+    "image_path": "data/processed/metal_nut/crack_001.png",
+    "label": "crack",
+    "user_prompt": "Analyse cette pièce métallique. Y a-t-il des défauts visibles ? Donne un verdict CONFORME ou NON CONFORME.",
+    "response": "**Analyse de la pièce :**\n\n- **Défaut détecté :** Fissure (crack)\n- **Localisation :** Bord inférieur gauche, propagation vers le centre\n- **Dimensions estimées :** 8 mm de longueur, fissure fine (< 0.2 mm)\n- **Sévérité :** Élevée — défaut structurel critique\n- **Cause probable :** Contrainte thermique excessive lors du refroidissement après usinage, ou choc mécanique lors de la manipulation.\n- **Risque :** Risque de rupture catastrophique en service. Pièce inutilisable.\n\n**Verdict : NON CONFORME** ❌\n\n**Action recommandée :** Rebut immédiat. Analyser les paramètres de refroidissement du processus."
+  },
+  {
+    "image_path": "data/processed/metal_nut/good_001.png",
+    "label": "good",
+    "user_prompt": "Analyse cette pièce métallique. Y a-t-il des défauts visibles ? Donne un verdict CONFORME ou NON CONFORME.",
+    "response": "**Analyse de la pièce :**\n\n- **Défauts détectés :** Aucun\n- **État de surface :** Homogène, texture régulière, absence d'anomalie visible\n- **Géométrie :** Conforme aux spécifications visuelles\n- **Observations :** Légères marques d'usinage normales (non considérées comme des défauts)\n\n**Verdict : CONFORME** ✅\n\n**Action recommandée :** Pièce validée pour passage en étape suivante."
+  }
+]
