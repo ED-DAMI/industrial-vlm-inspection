@@ -1,0 +1,29 @@
+[project]
+name = "industrial-vlm-inspection"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "ED-DAMI", email = "mohamed.eddami@usmba.ac.ma" }
+]
+requires-python = ">=3.14"
+dependencies = [
+    "accelerate>=0.34.0",
+    "bitsandbytes>=0.43.3",
+    "gradio>=4.44.0",
+    "numpy>=1.26.0",
+    "peft>=0.12.0",
+    "pillow>=10.4.0",
+    "pyyaml>=6.0.1",
+    "qwen-vl-utils>=0.0.8",
+    "torch>=2.4.0",
+    "torchvision>=0.19.0",
+    "transformers>=4.49.0",
+]
+
+[project.scripts]
+industrial-vlm-inspection = "industrial_vlm_inspection:main"
+
+[build-system]
+requires = ["uv_build>=0.12.23,<0.13.0"]
+build-backend = "uv_build"
