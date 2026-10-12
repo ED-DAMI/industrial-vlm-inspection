@@ -36,3 +36,36 @@ industrial-vlm-inspection/
 │
 ├── requirements.txt          # Dépendances Python requises
 └── README.md                 # Documentation du projet
+```
+
+## Téléchargement et exploration des données
+
+Après installation des dépendances (`pip install -r requirements.txt`), les
+datasets peuvent être téléchargés dans `data/raw/` :
+
+```bash
+python scripts/download_data.py --dataset mvtec
+python scripts/download_data.py --dataset neu
+```
+
+Pour une archive personnalisée :
+
+```powershell
+python scripts/download_data.py --url https://example.org/dataset.zip `
+  --name mon_dataset --output-dir data/raw
+```
+
+Le script évite les téléchargements et extractions déjà réalisés. Utilisez
+`--force` pour les refaire. Les archives sont conservées dans
+`data/raw/.archives/`.
+
+Les statistiques de base et les graphiques sont générés avec :
+
+```bash
+python scripts/visualize_data.py data/raw/mvtec --output-dir reports/mvtec
+```
+
+Le rapport contient `statistics.json`, le détail de chaque image dans
+`images.csv`, ainsi que `dataset_statistics.png` (répartition des classes et
+dimensions des images). Le nom du dossier parent de chaque image est utilisé
+comme classe.
