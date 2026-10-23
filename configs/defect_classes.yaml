@@ -1,0 +1,106 @@
+# Taxonomie unifiée des défauts. PROPOSITION À VALIDER avant de figer.
+# Chaque classe regroupe les noms de défauts d'origine (dossiers MVTec AD).
+# Toute valeur de `sources.mvtec` doit apparaître dans UNE SEULE classe.
+
+version: 1
+
+categories:            # nom du dossier -> libellé français (utilisé dans les réponses)
+  bottle: bouteille
+  cable: câble
+  capsule: capsule
+  carpet: tapis
+  grid: grille métallique
+  hazelnut: noisette
+  leather: cuir
+  metal_nut: écrou métallique
+  pill: comprimé
+  screw: vis
+  tile: carreau
+  toothbrush: brosse à dents
+  transistor: transistor
+  wood: bois
+  zipper: fermeture éclair
+
+classes:
+  - id: 0
+    name: good
+    label_fr: conforme
+    sources: {mvtec: []}          # dossier "good" traité à part
+
+  - id: 1
+    name: scratch
+    label_fr: rayure
+    sources:
+      mvtec: [scratch, scratch_head, scratch_neck]
+
+  - id: 2
+    name: crack
+    label_fr: fissure
+    sources:
+      mvtec: [crack]
+
+  - id: 3
+    name: break
+    label_fr: cassure
+    sources:
+      mvtec: [broken, broken_large, broken_small, broken_teeth, split_teeth, damaged_case]
+
+  - id: 4
+    name: cut
+    label_fr: coupure
+    sources:
+      mvtec: [cut, cut_inner_insulation, cut_outer_insulation, cut_lead]
+
+  - id: 5
+    name: hole
+    label_fr: perforation
+    sources:
+      mvtec: [hole, poke, poke_insulation]
+
+  - id: 6
+    name: contamination
+    label_fr: contamination ou salissure
+    sources:
+      mvtec: [contamination, metal_contamination, glue, glue_strip, oil, liquid, gray_stroke, thread]
+
+  - id: 7
+    name: deformation
+    label_fr: déformation
+    sources:
+      mvtec: [bent, bent_wire, bent_lead, fold, squeeze, squeezed_teeth]
+
+  - id: 8
+    name: color
+    label_fr: défaut de couleur
+    sources:
+      mvtec: [color]
+
+  - id: 9
+    name: print_defect
+    label_fr: défaut d'impression ou de marquage
+    sources:
+      mvtec: [print, faulty_imprint]
+
+  - id: 10
+    name: surface_damage
+    label_fr: dégradation de surface
+    sources:
+      mvtec: [rough, thread_side, thread_top, fabric_border, fabric_interior]
+
+  - id: 11
+    name: assembly_error
+    label_fr: erreur d'assemblage ou de positionnement
+    sources:
+      mvtec: [misplaced, missing_cable, missing_wire, cable_swap, flip, manipulated_front, pill_type]
+
+  - id: 12
+    name: multiple
+    label_fr: défauts multiples
+    sources:
+      mvtec: [combined]
+
+  - id: 13
+    name: other
+    label_fr: défaut non spécifié
+    sources:
+      mvtec: [defective]          # brosse à dents : un seul label "defective"

@@ -1,108 +1,178 @@
-"""Compute and visualize basic statistics for an image dataset."""
+"""Statistiques et visualisation d'un dataset d'images.
 
+Usage :
+    python scripts/visualize_data.py data/raw/mvtec --output-dir reports/mvtec
+
+Le nom du dossier parent de chaque image est utilisé comme classe.
+Sorties : statistics.json, images.csv, dataset_statistics.png
+"""
 from __future__ import annotations
 
 import argparse
-import csv
 import json
-from collections import Counter
 from pathlib import Path
 
-from PIL import Image, UnidentifiedImageError
+import matplotlib
 
-IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".tif", ".tiff", ".webp"}
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+# ======================================================================
+# VARIABLES À MODIFIER MANUELLEMENT
+# ======================================================================
+DATASET_DIR = Path("../data/row/mvtec-ad")      # dossier racine des images
+OUTPUT_DIR = Path("reports/mvtec")        # dossier de sortie du rapport
+IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+# Dossiers ignorés : masques, résultats de modèles, archives.
+# Mettre [] pour tout inclure.
+DEFAULT_EXCLUDE = ["ground_truth", "results", "reports", ".archives"]
+FIGURE_DPI = 130                          # résolution du graphique
+FIGURE_SIZE = (18, 10)                    # taille du graphique (pouces)
+HIST_BINS = 30                            # nombre de barres des histogrammes
+# ======================================================================
 
 
-def collect_statistics(data_dir: Path) -> tuple[list[dict[str, object]], list[str]]:
-    records: list[dict[str, object]] = []
-    errors: list[str] = []
-    for path in sorted(data_dir.rglob("*")):
-        if path.suffix.lower() not in IMAGE_EXTENSIONS:
+def find_images(root: Path, exclude: list[str]) -> list[Path]:
+    paths = []
+    for p in root.rglob("*"):
+        if p.suffix.lower() not in IMAGE_EXTENSIONS or not p.is_file():
             continue
-        try:
-            with Image.open(path) as image:
-                width, height = image.size
-                records.append(
-                    {
-                        "path": str(path.relative_to(data_dir)),
-                        "label": path.parent.name,
-                        "width": width,
-                        "height": height,
-                        "mode": image.mode,
-                        "format": image.format or path.suffix.lower().lstrip("."),
-                    }
-                )
-        except (OSError, UnidentifiedImageError) as error:
-            errors.append(f"{path}: {error}")
-    return records, errors
+        if any(part in exclude for part in p.relative_to(root).parts):
+            continue
+        paths.append(p)
+    return sorted(paths)
 
 
-def write_report(records: list[dict[str, object]], errors: list[str], output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    labels = Counter(str(record["label"]) for record in records)
-    widths = [int(record["width"]) for record in records]
-    heights = [int(record["height"]) for record in records]
-    report = {
-        "image_count": len(records),
-        "invalid_image_count": len(errors),
-        "class_counts": dict(sorted(labels.items())),
-        "width": {"min": min(widths), "max": max(widths), "mean": sum(widths) / len(widths)}
-        if widths
-        else {},
-        "height": {"min": min(heights), "max": max(heights), "mean": sum(heights) / len(heights)}
-        if heights
-        else {},
-        "errors": errors,
+def describe_image(path: Path, root: Path) -> dict:
+    rel = path.relative_to(root)
+    with Image.open(path) as img:
+        width, height = img.size
+        mode = img.mode
+        fmt = img.format
+        gray = np.asarray(img.convert("L"), dtype=np.float32)
+    return {
+        "path": rel.as_posix(),
+        "class": path.parent.name,
+        "top_folder": rel.parts[0] if len(rel.parts) > 1 else "",
+        "width": width,
+        "height": height,
+        "mode": mode,
+        "format": fmt,
+        "size_kb": round(path.stat().st_size / 1024, 1),
+        "brightness": round(float(gray.mean()), 2),
+        "contrast": round(float(gray.std()), 2),
     }
+
+
+def build_stats(df: pd.DataFrame) -> dict:
+    return {
+        "total_images": int(len(df)),
+        "num_classes": int(df["class"].nunique()),
+        "images_per_class": df["class"].value_counts().to_dict(),
+        "width": df["width"].describe().round(2).to_dict(),
+        "height": df["height"].describe().round(2).to_dict(),
+        "size_kb": df["size_kb"].describe().round(2).to_dict(),
+        "brightness": df["brightness"].describe().round(2).to_dict(),
+        "modes": df["mode"].value_counts().to_dict(),
+        "formats": df["format"].value_counts().to_dict(),
+        "resolutions": {
+            f"{w}x{h}": int(n)
+            for (w, h), n in df.groupby(["width", "height"]).size().items()
+        },
+    }
+
+
+def plot_stats(df: pd.DataFrame, out_file: Path) -> None:
+    fig, axes = plt.subplots(2, 3, figsize=FIGURE_SIZE)
+    fig.suptitle(f"Statistiques du dataset ({len(df)} images)", fontsize=15)
+
+    counts = df["class"].value_counts().sort_values()
+    counts.plot.barh(ax=axes[0, 0], color="steelblue")
+    axes[0, 0].set_title("Images par classe")
+    axes[0, 0].set_xlabel("Nombre d'images")
+
+    axes[0, 1].scatter(df["width"], df["height"], alpha=0.4, s=18)
+    axes[0, 1].set_title("Dimensions (largeur x hauteur)")
+    axes[0, 1].set_xlabel("Largeur (px)")
+    axes[0, 1].set_ylabel("Hauteur (px)")
+
+    axes[0, 2].hist(df["size_kb"], bins=HIST_BINS, color="darkorange")
+    axes[0, 2].set_title("Taille des fichiers")
+    axes[0, 2].set_xlabel("Ko")
+
+    axes[1, 0].hist(df["brightness"], bins=HIST_BINS, color="seagreen")
+    axes[1, 0].set_title("Luminosité moyenne")
+    axes[1, 0].set_xlabel("Niveau de gris moyen (0-255)")
+
+    axes[1, 1].hist(df["contrast"], bins=HIST_BINS, color="mediumpurple")
+    axes[1, 1].set_title("Contraste (écart-type)")
+    axes[1, 1].set_xlabel("Écart-type des niveaux de gris")
+
+    modes = df["mode"].value_counts()
+    axes[1, 2].pie(modes.values, labels=modes.index, autopct="%1.0f%%")
+    axes[1, 2].set_title("Modes couleur")
+
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(out_file, dpi=FIGURE_DPI)
+    plt.close(fig)
+
+
+def run(
+    dataset_dir: Path = DATASET_DIR,
+    output_dir: Path = OUTPUT_DIR,
+    exclude: list[str] | None = None,
+) -> pd.DataFrame:
+    """Analyse le dataset et écrit le rapport. Appelable depuis un notebook."""
+    exclude = DEFAULT_EXCLUDE if exclude is None else exclude
+    root = Path(dataset_dir)
+    output_dir = Path(output_dir)
+    if not root.is_dir():
+        raise SystemExit(f"Dossier introuvable : {root}")
+
+    paths = find_images(root, exclude)
+    if not paths:
+        raise SystemExit(f"Aucune image trouvée dans {root}")
+    print(f"{len(paths)} images trouvées, analyse en cours...")
+
+    rows, errors = [], []
+    for i, p in enumerate(paths, 1):
+        try:
+            rows.append(describe_image(p, root))
+        except Exception as exc:  # image corrompue
+            errors.append({"path": str(p), "error": str(exc)})
+        if i % 500 == 0:
+            print(f"  {i}/{len(paths)}")
+
+    df = pd.DataFrame(rows)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    df.to_csv(output_dir / "images.csv", index=False)
+    stats = build_stats(df)
+    stats["unreadable_images"] = errors
     (output_dir / "statistics.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(stats, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    with (output_dir / "images.csv").open("w", newline="", encoding="utf-8") as file:
-        writer = csv.DictWriter(file, fieldnames=["path", "label", "width", "height", "mode", "format"])
-        writer.writeheader()
-        writer.writerows(records)
+    plot_stats(df, output_dir / "dataset_statistics.png")
 
-
-def create_plots(records: list[dict[str, object]], output_dir: Path) -> None:
-    if not records:
-        return
-    try:
-        import matplotlib.pyplot as plt
-    except ImportError as error:
-        raise RuntimeError("La visualisation nécessite matplotlib (pip install matplotlib).") from error
-
-    labels = Counter(str(record["label"]) for record in records)
-    figure, axes = plt.subplots(1, 2, figsize=(12, 5))
-    axes[0].bar(labels.keys(), labels.values())
-    axes[0].set_title("Images par classe")
-    axes[0].set_xlabel("Classe")
-    axes[0].set_ylabel("Nombre d'images")
-    axes[0].tick_params(axis="x", rotation=45)
-    axes[1].scatter(
-        [int(record["width"]) for record in records],
-        [int(record["height"]) for record in records],
-        alpha=0.6,
-    )
-    axes[1].set_title("Dimensions des images")
-    axes[1].set_xlabel("Largeur (px)")
-    axes[1].set_ylabel("Hauteur (px)")
-    figure.tight_layout()
-    figure.savefig(output_dir / "dataset_statistics.png", dpi=150)
-    plt.close(figure)
+    print(f"Rapport écrit dans {output_dir}/")
+    print(f"  {stats['total_images']} images, {stats['num_classes']} classes")
+    if errors:
+        print(f"  {len(errors)} image(s) illisible(s), voir statistics.json")
+    return df
 
 
 def main() -> None:
+    # Les arguments en ligne de commande sont optionnels :
+    # sans argument, les variables du haut du fichier sont utilisées.
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("data_dir", type=Path, help="Dossier contenant les images")
-    parser.add_argument("--output-dir", type=Path, default=Path("reports"))
+    parser.add_argument("dataset_dir", type=Path, nargs="?", default=DATASET_DIR)
+    parser.add_argument("--output-dir", type=Path, default=OUTPUT_DIR)
+    parser.add_argument("--exclude", nargs="*", default=DEFAULT_EXCLUDE)
     args = parser.parse_args()
-    if not args.data_dir.is_dir():
-        parser.error(f"Dossier introuvable : {args.data_dir}")
-    records, errors = collect_statistics(args.data_dir)
-    write_report(records, errors, args.output_dir)
-    create_plots(records, args.output_dir)
-    print(f"{len(records)} image(s) analysée(s), {len(errors)} erreur(s).")
-    print(f"Rapport : {args.output_dir / 'statistics.json'}")
+    run(args.dataset_dir, args.output_dir, args.exclude)
 
 
 if __name__ == "__main__":
